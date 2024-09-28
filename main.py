@@ -6,6 +6,10 @@ import keyword
 import builtins
 import jedi
 import wx.lib.agw.customtreectrl as ctc
+import subprocess
+import wx.lib.newevent
+
+AutoSaveEvent, EVT_AUTOSAVE = wx.lib.newevent.NewEvent()
 
 class PythonSTC(stc.StyledTextCtrl):
     def __init__(self, parent):
@@ -14,14 +18,28 @@ class PythonSTC(stc.StyledTextCtrl):
         self.SetKeyWords(0, " ".join(keyword.kwlist + dir(builtins)))
         self.file_path = None
         self.setup_styles()
+        self.set_theme("light")  # Default to light theme
         self.setup_margins()
         self.setup_auto_comp()
         self.setup_folding()  # 新增折叠功能
         self.setup_indentation()  # 新增自动缩进
+        self.Bind(stc.EVT_STC_CHANGE, self.on_text_changed)
+        self.is_modified = False
 
     def setup_styles(self):
+        # This method will now be used to set up base styles
+        pass
+
+    def set_theme(self, theme):
+        self.theme = theme
+        if theme == "light":
+            self.set_light_theme()
+        else:
+            self.set_dark_theme()
+
+    def set_light_theme(self):
         styles = [
-            (stc.STC_STYLE_DEFAULT, "face:Courier New,size:10"),
+            (stc.STC_STYLE_DEFAULT, "face:Courier New,size:10,fore:#000000,back:#FFFFFF"),
             (stc.STC_P_DEFAULT, "fore:#000000"),
             (stc.STC_P_COMMENTLINE, "fore:#008000,italic"),
             (stc.STC_P_NUMBER, "fore:#008080"),
@@ -40,6 +58,73 @@ class PythonSTC(stc.StyledTextCtrl):
         self.StyleClearAll()
         for style, spec in styles:
             self.StyleSetSpec(style, spec)
+        self.SetCaretForeground("#000000")
+        self.SetSelBackground(True, "#C0C0C0")
+        
+        # 添加行号栏和缩进指南的颜色设置
+        self.StyleSetSpec(stc.STC_STYLE_LINENUMBER, "fore:#2B91AF,back:#FFFFFF")
+        self.SetIndentationGuides(stc.STC_IV_LOOKBOTH)
+        self.StyleSetForeground(stc.STC_STYLE_INDENTGUIDE, "#D3D3D3")
+
+    def set_dark_theme(self):
+        styles = [
+            (stc.STC_STYLE_DEFAULT, "face:Consolas,size:10,fore:#D4D4D4,back:#1E1E1E"),
+            (stc.STC_P_DEFAULT, "fore:#D4D4D4"),
+            (stc.STC_P_COMMENTLINE, "fore:#6A9955,italic"),
+            (stc.STC_P_NUMBER, "fore:#B5CEA8"),
+            (stc.STC_P_STRING, "fore:#CE9178"),
+            (stc.STC_P_CHARACTER, "fore:#CE9178"),
+            (stc.STC_P_WORD, "fore:#569CD6,bold"),
+            (stc.STC_P_TRIPLE, "fore:#CE9178"),
+            (stc.STC_P_TRIPLEDOUBLE, "fore:#CE9178"),
+            (stc.STC_P_CLASSNAME, "fore:#4EC9B0,bold"),
+            (stc.STC_P_DEFNAME, "fore:#DCDCAA,bold"),
+            (stc.STC_P_OPERATOR, "fore:#D4D4D4"),
+            (stc.STC_P_IDENTIFIER, "fore:#9CDCFE"),
+            (stc.STC_P_COMMENTBLOCK, "fore:#6A9955,italic"),
+            (stc.STC_P_STRINGEOL, "fore:#CE9178,back:#3F3F3F,eolfilled"),
+        ]
+        self.StyleClearAll()
+        for style, spec in styles:
+            self.StyleSetSpec(style, spec)
+        
+        # 设置默认背景色
+        self.SetBackgroundColour(wx.Colour(30, 30, 30))  # 深灰色背景
+        
+        self.SetCaretForeground("#D4D4D4")
+        self.SetSelBackground(True, "#264F78")
+        self.SetSelForeground(True, "#D4D4D4")
+        
+        # 设置行号栏的颜色
+        self.StyleSetSpec(stc.STC_STYLE_LINENUMBER, "fore:#858585,back:#1E1E1E")
+        
+        # 设置缩进指南的颜色
+        self.SetIndentationGuides(stc.STC_IV_LOOKBOTH)
+        self.StyleSetForeground(stc.STC_STYLE_INDENTGUIDE, "#3F3F3F")
+
+        # 设置折叠标记的颜色
+        for marker in [stc.STC_MARKNUM_FOLDEROPEN, stc.STC_MARKNUM_FOLDER,
+                       stc.STC_MARKNUM_FOLDERSUB, stc.STC_MARKNUM_FOLDERTAIL,
+                       stc.STC_MARKNUM_FOLDEREND, stc.STC_MARKNUM_FOLDEROPENMID,
+                       stc.STC_MARKNUM_FOLDERMIDTAIL]:
+            self.MarkerSetForeground(marker, "#D4D4D4")
+            self.MarkerSetBackground(marker, "#3F3F3F")
+
+        # 设置空白字符的颜色
+        self.SetWhitespaceForeground(True, "#3F3F3F")
+        self.SetWhitespaceBackground(True, "#1E1E1E")
+
+        # 禁用边缘线
+        self.SetEdgeColour(wx.Colour(30, 30, 30))
+        self.SetEdgeMode(stc.STC_EDGE_NONE)
+
+        # 确保没有额外的样式导致白色出现
+        self.StyleSetBackground(stc.STC_STYLE_DEFAULT, "#1E1E1E")
+        for style in range(32):  # Scintilla 使用 32 种基本样式
+            self.StyleSetBackground(style, "#1E1E1E")
+
+        # 刷新显示
+        self.Refresh()
 
     def setup_margins(self):
         self.SetMarginType(0, stc.STC_MARGIN_NUMBER)
@@ -66,8 +151,10 @@ class PythonSTC(stc.StyledTextCtrl):
         completions = script.complete(current_line + 1, line_pos)
         
         if completions:
-            auto_comp_list = [f"{c.name}?{c.type}" for c in completions]
-            self.AutoCompShow(0, " ".join(auto_comp_list))
+            auto_comp_list = [f"{c.name}?{c.type}\t{c.docstring().split('.')[0]}" for c in completions]
+            self.AutoCompShow(0, "\n".join(auto_comp_list))
+            self.AutoCompSetTypeSeparator(63)  # ASCII for '?'
+            self.AutoCompSetSeparator(10)  # ASCII for '\n'
 
     def set_file_path(self, path):
         self.file_path = path
@@ -106,6 +193,18 @@ class PythonSTC(stc.StyledTextCtrl):
             if self.GetFoldLevel(line_clicked) & stc.STC_FOLDLEVELHEADERFLAG:
                 self.ToggleFold(line_clicked)
 
+    def on_text_changed(self, event):
+        if not self.is_modified:
+            self.is_modified = True
+            wx.CallAfter(self.update_title)
+
+    def update_title(self):
+        index = self.GetParent().GetPageIndex(self)
+        if index != -1:
+            title = self.GetParent().GetPageText(index)
+            if not title.endswith('*'):
+                self.GetParent().SetPageText(index, title + '*')
+
 class PythonEditor(wx.Frame):
     def __init__(self):
         super().__init__(parent=None, title='Python Editor')
@@ -113,10 +212,16 @@ class PythonEditor(wx.Frame):
         self.aui_manager = aui.AuiManager()
         self.aui_manager.SetManagedWindow(self)
         self.init_file_tree_icons()
+        self.show_line_numbers = True
         self.create_ui()
         self.bind_events()
         self.aui_manager.Update()
         self.find_data = wx.FindReplaceData()
+        self.auto_save_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.on_auto_save_timer, self.auto_save_timer)
+        self.auto_save_timer.Start(300000)  # 每5分钟自动保存一次
+        self.Bind(EVT_AUTOSAVE, self.on_auto_save)
+        self.current_theme = "light"
 
     def init_file_tree_icons(self):
         # 创建图像列表
@@ -136,6 +241,8 @@ class PythonEditor(wx.Frame):
         menubar = wx.MenuBar()
         file_menu = wx.Menu()
         edit_menu = wx.Menu()
+        run_menu = wx.Menu()  # 新增运行菜单
+        view_menu = wx.Menu()
         menu_items = [
             (wx.ID_NEW, '新建', self.on_new),
             (wx.ID_OPEN, '打开', self.on_open),
@@ -160,8 +267,26 @@ class PythonEditor(wx.Frame):
             item = edit_menu.Append(id, label)
             self.Bind(wx.EVT_MENU, handler, item)
 
+        # 添加运行菜单项
+        run_items = [
+            (wx.ID_ANY, '运行当前文件', self.on_run_file),  # 使用 wx.ID_ANY 替代 wx.NewId()
+        ]
+        for id, label, handler in run_items:
+            item = run_menu.Append(id, label)
+            self.Bind(wx.EVT_MENU, handler, item)
+
+        self.line_numbers_item = view_menu.AppendCheckItem(wx.ID_ANY, "显示行号")
+        self.line_numbers_item.Check(self.show_line_numbers)
+        self.Bind(wx.EVT_MENU, self.on_toggle_line_numbers, self.line_numbers_item)
+
+        # Add theme toggle item
+        self.theme_item = view_menu.AppendCheckItem(wx.ID_ANY, "深色主题")
+        self.Bind(wx.EVT_MENU, self.on_toggle_theme, self.theme_item)
+
         menubar.Append(file_menu, '文件')
         menubar.Append(edit_menu, '编辑')
+        menubar.Append(run_menu, '运行')  # 添加运行菜单
+        menubar.Append(view_menu, "视图")
         
         self.SetMenuBar(menubar)
 
@@ -184,15 +309,29 @@ class PythonEditor(wx.Frame):
             (None, None, None, None),  # 分隔符
             (wx.ID_FIND, '查找', wx.ART_FIND, '查找文本'),
             (wx.ID_REPLACE, '替换', wx.ART_FIND_AND_REPLACE, '查找并替换文本'),
+            (None, None, None, None),  # 分隔符
+            (wx.ID_ANY, '运行', 'run.png', '运行当前文件'),  # 使用自定义图标
         ]
 
+        self.run_tool_id = None
         for id, label, art, tooltip in tools:
             if id is None:
                 toolbar.AddSeparator()
             else:
-                tool = toolbar.AddTool(id, label, wx.ArtProvider.GetBitmap(art, wx.ART_TOOLBAR, (24, 24)))
-                tool.SetShortHelp(tooltip)  # 设置鼠标悬停时的提示信息
-                self.Bind(wx.EVT_TOOL, self.on_tool, id=id)
+                if isinstance(art, str) and art.endswith('.png'):
+                    # 加载自定义图标
+                    bitmap = wx.Bitmap(art, wx.BITMAP_TYPE_PNG)
+                else:
+                    bitmap = wx.ArtProvider.GetBitmap(art, wx.ART_TOOLBAR, (24, 24))
+                
+                if bitmap.IsOk():
+                    tool = toolbar.AddTool(id, label, bitmap, tooltip)
+                else:
+                    # 如果获取不到合适的图标，使用一个默认的文本按钮
+                    tool = toolbar.AddTool(id, label, wx.NullBitmap, tooltip)
+                if label == '运行':
+                    self.run_tool_id = tool.GetId()
+                self.Bind(wx.EVT_TOOL, self.on_tool, id=tool.GetId())
 
         toolbar.Realize()
 
@@ -220,6 +359,8 @@ class PythonEditor(wx.Frame):
             self.on_find(event)
         elif id == wx.ID_REPLACE:
             self.on_replace(event)
+        elif id == self.run_tool_id:
+            self.on_run_file(event)
         else:
             wx.MessageBox(f"功能 '{event.GetEventObject().GetToolShortHelp(id)}' 尚未实现", 
                           "提示", wx.OK | wx.ICON_INFORMATION)
@@ -258,6 +399,8 @@ class PythonEditor(wx.Frame):
 
     def on_new(self, event):
         editor = PythonSTC(self.notebook)
+        if not self.show_line_numbers:
+            editor.SetMarginWidth(0, 0)
         self.notebook.AddPage(editor, "Untitled", select=True)
 
     def on_open(self, event):
@@ -293,6 +436,11 @@ class PythonEditor(wx.Frame):
             file.write(editor.GetText())
         editor.set_file_path(path)
         self.notebook.SetPageText(self.notebook.GetSelection(), os.path.basename(path))
+        editor.is_modified = False
+        index = self.notebook.GetPageIndex(editor)
+        title = self.notebook.GetPageText(index)
+        if title.endswith('*'):
+            self.notebook.SetPageText(index, title[:-1])
 
     def on_exit(self, event):
         self.Close()
@@ -390,6 +538,64 @@ class PythonEditor(wx.Frame):
         editor = self.notebook.GetCurrentPage()
         if editor:
             editor.Redo()
+
+    def on_run_file(self, event):
+        editor = self.notebook.GetCurrentPage()
+        if editor and editor.file_path:
+            self.run_python_file(editor.file_path)
+        else:
+            wx.MessageBox("请先保存文件", "错误", wx.OK | wx.ICON_ERROR)
+
+    def run_python_file(self, file_path):
+        try:
+            result = subprocess.run(['python', file_path], capture_output=True, text=True)
+            output = result.stdout + result.stderr
+            
+            # 创建输出窗口
+            output_window = wx.Frame(self, title="运行结果")
+            output_text = wx.TextCtrl(output_window, style=wx.TE_MULTILINE | wx.TE_READONLY)
+            output_text.SetValue(output)
+            output_window.Show()
+        except Exception as e:
+            wx.MessageBox(f"运行错误: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+    def on_toggle_line_numbers(self, event):
+        self.show_line_numbers = not self.show_line_numbers
+        for i in range(self.notebook.GetPageCount()):
+            editor = self.notebook.GetPage(i)
+            if self.show_line_numbers:
+                editor.SetMarginWidth(0, 30)
+            else:
+                editor.SetMarginWidth(0, 0)
+
+    def on_toggle_theme(self, event):
+        is_dark = self.theme_item.IsChecked()
+        theme = "dark" if is_dark else "light"
+        self.current_theme = theme
+        for i in range(self.notebook.GetPageCount()):
+            editor = self.notebook.GetPage(i)
+            editor.set_theme(theme)
+        # 更新文件树的颜色
+        self.update_file_tree_colors()
+
+    def update_file_tree_colors(self):
+        if self.current_theme == "dark":
+            self.file_tree.SetBackgroundColour("#1E1E1E")
+            self.file_tree.SetForegroundColour("#D4D4D4")
+        else:
+            self.file_tree.SetBackgroundColour(wx.NullColour)
+            self.file_tree.SetForegroundColour(wx.NullColour)
+        self.file_tree.Refresh()
+
+    def on_auto_save_timer(self, event):
+        wx.PostEvent(self, AutoSaveEvent())
+
+    def on_auto_save(self, event):
+        for i in range(self.notebook.GetPageCount()):
+            editor = self.notebook.GetPage(i)
+            if editor.file_path:
+                self.save_file(editor, editor.file_path)
+        print("自动保存完成")
 
 if __name__ == '__main__':
     app = wx.App()
